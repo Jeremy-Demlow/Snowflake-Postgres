@@ -164,24 +164,152 @@ Features:
                         └───────────────────┘
 ```
 
+## How It Works
+
+### The Key Innovation: Snowpark DB-API 2.0
+
+Traditional ETL requires:
+1. External compute (EC2, Lambda, etc.) to query source database
+2. Staging data somewhere (S3, local disk)
+3. Loading into Snowflake via COPY or Snowpipe
+
+**Snowpark DB-API eliminates all of this.** With `session.read.dbapi()`, Snowflake's compute directly connects to your source database:
+
+```python
+# This runs INSIDE Snowflake - no external compute needed
+df = session.read.dbapi(
+    connection_factory,           # psycopg2.connect wrapper
+    query="SELECT * FROM users WHERE updated_at > '2024-01-01'",
+    fetch_size=100000,            # Batch size for streaming
+    num_partitions=4,             # Parallel extraction threads
+)
+```
+
+### Why This Works
+
+1. **External Access Integration**: Snowflake securely connects to external hosts
+   ```sql
+   CREATE EXTERNAL ACCESS INTEGRATION PG_ACCESS_INTEGRATION
+     ALLOWED_NETWORK_RULES = (PG_NETWORK_RULE)
+     ALLOWED_AUTHENTICATION_SECRETS = (PG_SECRET)
+     ENABLED = TRUE;
+   ```
+
+2. **Stored Procedure with Python Runtime**: The CDC logic runs as a stored procedure
+   ```sql
+   CREATE PROCEDURE SYNC_TABLE(config, database, table, full_refresh)
+     LANGUAGE PYTHON
+     RUNTIME_VERSION = '3.10'
+     PACKAGES = ('snowflake-snowpark-python', 'pyyaml', 'psycopg2')
+     IMPORTS = ('@CDC_STAGE/dbapi_cdc.zip')
+     EXTERNAL_ACCESS_INTEGRATIONS = (PG_ACCESS_INTEGRATION)
+     SECRETS = ('creds' = PG_SECRET)
+     HANDLER = 'dbapi_cdc.procedures.sync_table'
+   ```
+
+3. **Task DAG for Parallelism**: Root task triggers child tasks that run in parallel
+   ```
+   DBAPI_REPLICATION_DAG (root, scheduled)
+       ├── DBAPI_REPLICATION_DAG_CUSTOMER_A_DB_USERS
+       ├── DBAPI_REPLICATION_DAG_CUSTOMER_A_DB_ORDERS
+       ├── DBAPI_REPLICATION_DAG_CUSTOMER_A_DB_PAYMENTS
+       └── ... (all run in parallel after root completes)
+   ```
+
+### Data Flow Detail
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         SNOWFLAKE COMPUTE                                │
+│  ┌─────────────────────────────────────────────────────────────────┐   │
+│  │  Stored Procedure: SYNC_TABLE                                    │   │
+│  │                                                                  │   │
+│  │  1. Get high watermark from _REPLICATION_STATE                   │   │
+│  │     SELECT last_sync_value WHERE table='users'                   │   │
+│  │     → '2024-01-23 10:00:00'                                      │   │
+│  │                                                                  │   │
+│  │  2. Extract via DB-API (runs inside Snowflake!)                  │   │
+│  │     session.read.dbapi(                                          │   │
+│  │       query="SELECT * FROM users WHERE updated_at > '...'",      │   │
+│  │       num_partitions=4  # Parallel extraction                    │   │
+│  │     ) ──────────────────────┐                                    │   │
+│  │                             │                                    │   │
+│  │  3. Load via MERGE         ▼                                    │   │
+│  │     df.write.merge(     ┌──────────┐                            │   │
+│  │       target_table,     │ Snowpark │                            │   │
+│  │       primary_key,      │ DataFrame│                            │   │
+│  │       update_cols       └──────────┘                            │   │
+│  │     )                                                            │   │
+│  │                                                                  │   │
+│  │  4. Update watermark                                             │   │
+│  │     UPDATE _REPLICATION_STATE SET last_sync_value = MAX(updated_at) │
+│  │                                                                  │   │
+│  │  5. Log event to _SYNC_LOGS                                      │   │
+│  │     INSERT INTO _SYNC_LOGS (event_type='SYNC_COMPLETE', ...)     │   │
+│  └─────────────────────────────────────────────────────────────────┘   │
+│                              │                                          │
+│                              │ External Access Integration              │
+│                              ▼                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                               │
+                               │ TCP/5432 (allowed by Network Rule)
+                               ▼
+                    ┌─────────────────────┐
+                    │     PostgreSQL      │
+                    │  (external source)  │
+                    └─────────────────────┘
+```
+
+### CDC High Watermark Strategy
+
+Each table tracks its own watermark in `_REPLICATION_STATE`:
+
+| source_db | table_name | last_sync_value | sync_status |
+|-----------|------------|-----------------|-------------|
+| customer_a_db | users | 2024-01-23 10:00:00 | completed |
+| customer_a_db | orders | 2024-01-23 10:00:00 | completed |
+
+**Incremental sync query:**
+```sql
+SELECT * FROM users WHERE updated_at > '2024-01-23 10:00:00'
+```
+
+**Timezone handling** (critical!): Source DB timezone must be configured to ensure watermark comparisons work correctly:
+```yaml
+source:
+  timezone: "UTC"  # Must match your source database timezone
+```
+
+### MERGE Upsert Logic
+
+Data is loaded using Snowpark's MERGE which handles both inserts and updates:
+
+```python
+df.write.mode("overwrite").merge(
+    target_table,
+    primary_key=["user_id"],           # Match on primary key
+    update_columns=["name", "email", "updated_at"],  # Update these on match
+)
+```
+
+This generates SQL like:
+```sql
+MERGE INTO target_table t
+USING source_data s ON t.user_id = s.user_id
+WHEN MATCHED THEN UPDATE SET t.name = s.name, t.email = s.email, ...
+WHEN NOT MATCHED THEN INSERT (user_id, name, email, ...) VALUES (...)
+```
+
 ## Modules
 
 | Module | Purpose |
 |--------|---------|
-| `extractor.py` | Pull data via `session.read.dbapi()` |
+| `extractor.py` | Pull data via `session.read.dbapi()` with partitioned extraction |
 | `loader.py` | Load into Snowflake via Snowpark MERGE |
 | `replicator.py` | Orchestrate extraction, loading, and logging |
-| `state.py` | Track high watermarks per table |
-| `procedures.py` | Snowflake stored procedure handlers |
-| `deploy_to_snowflake.py` | Deploy procedures and Task DAG |
-
-## How It Works
-
-1. **Extraction**: Uses Snowpark's `session.read.dbapi()` to connect to PostgreSQL via psycopg2 driver
-2. **CDC**: Tracks high watermark (`updated_at`) with timezone-aware comparisons
-3. **Loading**: Uses Snowpark MERGE for upserts based on primary key
-4. **Logging**: Records events to `_SYNC_LOGS` with timing metrics
-5. **Scheduling**: Task DAG runs child tasks in parallel on schedule
+| `state.py` | Track high watermarks per table in `_REPLICATION_STATE` |
+| `procedures.py` | Snowflake stored procedure entry points |
+| `deploy_to_snowflake.py` | Deploy procedures, Task DAG, and upload package |
 
 ## Configuration
 

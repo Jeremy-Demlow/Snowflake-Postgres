@@ -37,20 +37,43 @@ SNOWFLAKE_CONNECTION_NAME=myconnection python -m dbapi_cdc.deploy_to_snowflake
 
 See [db-api/README.md](db-api/README.md) for full documentation.
 
-## Architecture
+## How It Works
+
+**No external compute required.** Snowpark DB-API 2.0 runs the extraction *inside* Snowflake:
 
 ```
-PostgreSQL ──► Snowpark DB-API ──► Snowflake Tables
-              session.read.dbapi()   MERGE upsert
-                     │
-                     ▼
-              Task DAG (parallel)
-              ├── users_task
-              ├── orders_task
-              ├── payments_task
-              ├── products_task
-              └── inventory_task
+┌─────────────────────────────────────────────────────────────┐
+│                    SNOWFLAKE COMPUTE                         │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │  Stored Procedure: SYNC_TABLE                        │    │
+│  │                                                      │    │
+│  │  1. session.read.dbapi(query, num_partitions=4)      │    │
+│  │     → Connects to Postgres via External Access       │    │
+│  │                                                      │    │
+│  │  2. df.write.merge(target, pk, update_cols)          │    │
+│  │     → Upserts into Snowflake table                   │    │
+│  │                                                      │    │
+│  │  3. Update _REPLICATION_STATE with new watermark     │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                           │                                  │
+│                           │ External Access Integration      │
+│                           ▼                                  │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            │ TCP/5432
+                            ▼
+                 ┌─────────────────────┐
+                 │     PostgreSQL      │
+                 └─────────────────────┘
 ```
+
+Key components:
+- **External Access Integration**: Allows Snowflake to reach external hosts securely
+- **Stored Procedure**: Python code runs in Snowflake with `psycopg2` driver
+- **Task DAG**: Root task triggers parallel child tasks for each table
+- **CDC Watermark**: Tracks `updated_at` per table for incremental syncs
+
+See [db-api/README.md](db-api/README.md) for detailed architecture docs.
 
 ## Features
 
