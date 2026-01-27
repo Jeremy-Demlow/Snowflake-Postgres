@@ -5,10 +5,12 @@ Config-driven CDC replication from external databases to Snowflake using **Snowp
 ## Features
 
 - **Snowpark DB-API 2.0**: Uses `session.read.dbapi()` for efficient, parallelized extraction
-- **Incremental CDC**: High watermark tracking via `updated_at` columns
+- **Incremental CDC**: High watermark tracking via `updated_at` columns with timezone support
 - **Task DAG Orchestration**: Parallel execution across tables with Snowflake Tasks
 - **Multi-driver**: PostgreSQL (psycopg2), SQL Server (pymssql), MySQL (pymysql)
 - **Auto-schema**: Creates target tables automatically from source
+- **Sync Logging**: Event tracking with timing metrics in `_SYNC_LOGS` table
+- **Monitoring Dashboard**: Streamlit app for real-time status
 
 ## Quick Start
 
@@ -43,9 +45,10 @@ CREATE EXTERNAL ACCESS INTEGRATION PG_ACCESS_INTEGRATION
 # config/replication_config.yaml
 source:
   driver: psycopg2
-  host: "your-postgres-host.example.com"
+  host: "${PG_HOST}"  # Use env var or replace with your host
   port: 5432
   secret_name: "DBAPI_REPLICA_DB.PUBLIC.PG_SECRET"
+  timezone: "UTC"  # Source DB timezone - critical for CDC accuracy
   databases:
     - name: customer_a_db
       tables:
@@ -70,6 +73,11 @@ orchestration:
 
 ```bash
 pip install -e .
+
+# Preview what will be deployed
+SNOWFLAKE_CONNECTION_NAME=myconnection python -m dbapi_cdc.deploy_to_snowflake --dry-run
+
+# Actually deploy
 SNOWFLAKE_CONNECTION_NAME=myconnection python -m dbapi_cdc.deploy_to_snowflake
 ```
 
@@ -104,32 +112,36 @@ EXECUTE TASK DBAPI_REPLICA_DB.UTILS.DBAPI_REPLICATION_DAG;
 SELECT SOURCE_DB, TABLE_NAME, SYNC_STATUS, ROWS_SYNCED
 FROM DBAPI_REPLICA_DB.PUBLIC._REPLICATION_STATE;
 
--- View task execution history
-SELECT NAME, STATE, 
-       TIMESTAMPDIFF('second', SCHEDULED_TIME, COMPLETED_TIME) as DURATION_SEC
-FROM TABLE(DBAPI_REPLICA_DB.INFORMATION_SCHEMA.TASK_HISTORY())
-WHERE NAME LIKE 'DBAPI_REPLICATION%'
-ORDER BY SCHEDULED_TIME DESC;
+-- View sync logs with timing
+SELECT LOG_TS, SOURCE_DB, TABLE_NAME, EVENT_TYPE, ROWS_AFFECTED, DURATION_MS
+FROM DBAPI_REPLICA_DB.PUBLIC._SYNC_LOGS
+ORDER BY LOG_TS DESC LIMIT 20;
 ```
+
+### 5. Monitoring Dashboard
+
+```bash
+SNOWFLAKE_CONNECTION_NAME=myconnection streamlit run monitoring/streamlit_app.py
+```
+
+Features:
+- Real-time sync status with row drift detection
+- Source vs target row count comparison
+- Task execution history
+- One-click "Run Sync" and "Reconnect" buttons
 
 ## Example Results
 
-**Replication State:**
-| SOURCE_DB | TABLE_NAME | SYNC_STATUS | ROWS_SYNCED |
-|-----------|------------|-------------|-------------|
-| customer_a_db | users | completed | 55,579 |
-| customer_a_db | orders | completed | 35,000 |
-| customer_b_db | users | completed | 15,012 |
-| customer_b_db | orders | completed | 15,000 |
+**Full refresh of 260k rows in ~16 seconds:**
 
-**Task Execution (parallel):**
-| Task | Duration |
-|------|----------|
-| DBAPI_REPLICATION_DAG (root) | 1s |
-| customer_a_db.users | 37s |
-| customer_a_db.orders | 42s |
-| customer_b_db.users | 43s |
-| customer_b_db.orders | 45s |
+| SOURCE_DB | TABLE_NAME | ROWS | DURATION |
+|-----------|------------|------|----------|
+| customer_a_db | users | 63,579 | 14s |
+| customer_a_db | orders | 43,000 | 16s |
+| customer_a_db | payments | 33,000 | 14s |
+| customer_a_db | products | 23,000 | 13s |
+| customer_a_db | inventory | 23,000 | 16s |
+| customer_b_db | (all 5) | 75,012 | 15s |
 
 ## Architecture
 
@@ -158,7 +170,7 @@ ORDER BY SCHEDULED_TIME DESC;
 |--------|---------|
 | `extractor.py` | Pull data via `session.read.dbapi()` |
 | `loader.py` | Load into Snowflake via Snowpark MERGE |
-| `replicator.py` | Orchestrate extraction and loading |
+| `replicator.py` | Orchestrate extraction, loading, and logging |
 | `state.py` | Track high watermarks per table |
 | `procedures.py` | Snowflake stored procedure handlers |
 | `deploy_to_snowflake.py` | Deploy procedures and Task DAG |
@@ -166,9 +178,31 @@ ORDER BY SCHEDULED_TIME DESC;
 ## How It Works
 
 1. **Extraction**: Uses Snowpark's `session.read.dbapi()` to connect to PostgreSQL via psycopg2 driver
-2. **CDC**: Tracks high watermark (`updated_at`) to only pull changed rows
+2. **CDC**: Tracks high watermark (`updated_at`) with timezone-aware comparisons
 3. **Loading**: Uses Snowpark MERGE for upserts based on primary key
-4. **Scheduling**: Task DAG runs child tasks in parallel on schedule
+4. **Logging**: Records events to `_SYNC_LOGS` with timing metrics
+5. **Scheduling**: Task DAG runs child tasks in parallel on schedule
+
+## Configuration
+
+Key config options in `replication_config.yaml`:
+
+| Option | Description |
+|--------|-------------|
+| `source.timezone` | Source DB timezone (UTC, America/Los_Angeles) - critical for CDC |
+| `source.driver` | Database driver (psycopg2, pymssql, pymysql) |
+| `orchestration.schedule` | Cron schedule for Task DAG |
+| `orchestration.parallelism` | Number of parallel table syncs |
+
+## Test Data Generation
+
+```bash
+# Generate test data (password via env var for security)
+PG_PASSWORD=xxx python scripts/fast_data_gen.py --host your-host.com large
+
+# Scale options: small, medium, large, xlarge
+python scripts/fast_data_gen.py --help
+```
 
 ## Testing
 
