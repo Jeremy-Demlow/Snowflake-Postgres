@@ -1,0 +1,55 @@
+source:
+  type: postgres
+  host: "${PG_HOST}"
+  port: 5432
+  secret_name: "DBAPI_REPLICA_DB.PUBLIC.PG_SECRET"
+  timezone: "UTC"  # Source DB timezone - CRITICAL for CDC watermark accuracy (UTC, America/Los_Angeles, etc.)
+
+  databases:
+    - name: customer_a_db
+      tables:
+        - name: orders
+          primary_key: [id]
+          cdc_column: updated_at
+          partition_column: id
+          num_partitions: 4
+        - name: users
+          primary_key: [user_id]
+          cdc_column: updated_at
+        - name: payments
+          primary_key: [payment_id]
+          cdc_column: updated_at
+          partition_column: payment_id
+
+    - name: customer_b_db
+      tables:
+        - name: products
+          primary_key: [product_id]
+          cdc_column: updated_at
+        - name: inventory
+          primary_key: [inventory_id]
+          cdc_column: updated_at
+
+target:
+  database: DBAPI_REPLICA_DB
+  schema_pattern: "{source_db}_RAW"
+  create_if_not_exists: true
+
+orchestration:
+  dag_name: "DBAPI_REPLICATION_DAG"
+  schedule: "0 */4 * * *"
+  timezone: "UTC"
+  warehouse: null  # null = serverless, or "DBAPI_REPLICATION_WH" for large loads
+  parallelism: 4
+  retry_attempts: 2
+  user_task_timeout_ms: 3600000
+
+extraction:
+  fetch_size: 100000
+  query_timeout: 300
+
+monitoring:
+  state_schema: "PUBLIC"
+  state_table: "_REPLICATION_STATE"
+  log_level: "INFO"
+  error_integration: null

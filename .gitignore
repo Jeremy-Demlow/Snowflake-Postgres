@@ -1,0 +1,64 @@
+# Credentials - NEVER commit these
+credentials/
+*.credentials
+*.secret
+*.secrets
+
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# Conda environment
+.conda/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Build artifacts
+*.zip
+dist/
+build/
+
+# Testing
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Data files (generated)
+*.parquet
+*.csv

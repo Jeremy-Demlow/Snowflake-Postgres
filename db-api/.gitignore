@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# UV / Virtual environments
+.venv/
+.uv/
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Credentials - NEVER COMMIT
+credentials/
+*.env
+.env.*
+secrets.yaml
+*_secret*
+*.pem
+*.key
+
+# Snowflake
+snowflake_credentials.json
+
+# Logs
+*.log
+logs/
+
+# Data files (generated)
+*.parquet
+*.csv
+data_gen/output/
+
+# OS
+.DS_Store
+Thumbs.db
