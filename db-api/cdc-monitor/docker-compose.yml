@@ -1,0 +1,10 @@
+services:
+  cdc-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3847:3000"
+    env_file:
+      - .env
+    restart: unless-stopped

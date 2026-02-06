@@ -1,0 +1,160 @@
+# =============================================================================
+# DB-API CDC: Snowpark Project Configuration
+# =============================================================================
+# Deploys procedures from the dbapi_cdc package using session.read.dbapi().
+# Deploy with: snow snowpark deploy --replace --connection myconnection
+# =============================================================================
+definition_version: '2'
+
+mixins:
+  cdc_shared:
+    artifacts:
+      - src: dbapi_cdc/procedures.py
+        dest: procedures.py
+    stage: DBAPI_REPLICA_DB.UTILS.SYNC_STAGE
+    runtime: "3.11"
+    external_access_integrations:
+      - PG_ACCESS_INTEGRATION
+    secrets:
+      creds: DBAPI_REPLICA_DB.PUBLIC.PG_SECRET
+
+entities:
+  sync_single_table:
+    type: procedure
+    identifier:
+      name: SYNC_SINGLE_TABLE
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.sync_single_table
+    signature:
+      - name: database_id
+        type: string
+      - name: table_id
+        type: string
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  check_pg_health:
+    type: procedure
+    identifier:
+      name: CHECK_PG_HEALTH
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.check_pg_health
+    signature: ""
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  test_wal_cdc:
+    type: procedure
+    identifier:
+      name: TEST_WAL_CDC
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.test_wal_cdc
+    signature:
+      - name: action
+        type: string
+      - name: table_name
+        type: string
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  register_database:
+    type: procedure
+    identifier:
+      name: REGISTER_DATABASE
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.register_database
+    signature:
+      - name: database_id
+        type: string
+      - name: source_db_name
+        type: string
+      - name: host
+        type: string
+      - name: target_schema
+        type: string
+      - name: source_schema
+        type: string
+      - name: port
+        type: int
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  register_table:
+    type: procedure
+    identifier:
+      name: REGISTER_TABLE
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.register_table
+    signature:
+      - name: database_id
+        type: string
+      - name: source_table
+        type: string
+      - name: sync_method
+        type: string
+      - name: primary_key
+        type: string
+      - name: cdc_column
+        type: string
+      - name: wal_slot
+        type: string
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  list_tables:
+    type: procedure
+    identifier:
+      name: LIST_TABLES
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.list_tables
+    signature:
+      - name: database_id
+        type: string
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  setup_replication:
+    type: procedure
+    identifier:
+      name: SETUP_REPLICATION
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.setup_replication
+    signature:
+      - name: config_json
+        type: string
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared
+
+  consolidate_sync_log:
+    type: procedure
+    identifier:
+      name: CONSOLIDATE_SYNC_LOG
+      schema: UTILS
+      database: DBAPI_REPLICA_DB
+    handler: procedures.consolidate_sync_log
+    signature: ""
+    returns: string
+    meta:
+      use_mixins:
+        - cdc_shared

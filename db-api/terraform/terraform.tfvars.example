@@ -1,0 +1,6 @@
+# Terraform variables example
+# Copy to terraform.tfvars and fill in values
+
+pg_host     = "your_pg_host"
+pg_user     = "snowflake_admin"
+pg_password = "your_pg_password"

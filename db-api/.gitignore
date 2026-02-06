@@ -50,6 +50,12 @@ secrets.yaml
 # Snowflake
 snowflake_credentials.json
 
+# Terraform state (contains secrets)
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/.terraform/
+terraform/terraform.tfvars
+
 # Logs
 *.log
 logs/
@@ -62,3 +68,4 @@ data_gen/output/
 # OS
 .DS_Store
 Thumbs.db
+.env
