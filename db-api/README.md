@@ -1,340 +1,140 @@
-# dbapi-cdc
+# PostgreSQL → Snowflake CDC Pipeline
 
-Config-driven CDC replication from external databases to Snowflake using **Snowpark's native DB-API 2.0**.
-
-## Features
-
-- **Snowpark DB-API 2.0**: Uses `session.read.dbapi()` for efficient, parallelized extraction
-- **Incremental CDC**: High watermark tracking via `updated_at` columns with timezone support
-- **Task DAG Orchestration**: Parallel execution across tables with Snowflake Tasks
-- **Multi-driver**: PostgreSQL (psycopg2), SQL Server (pymssql), MySQL (pymysql)
-- **Auto-schema**: Creates target tables automatically from source
-- **Sync Logging**: Event tracking with timing metrics in `_SYNC_LOGS` table
-- **Monitoring Dashboard**: Streamlit app for real-time status
+**Production-ready Change Data Capture pipeline replicating PostgreSQL to Snowflake using Snowpark's `session.read.dbapi()`.**
 
 ## Quick Start
 
-### 1. Prerequisites - Set up Snowflake access
-
-```sql
--- Create database
-CREATE DATABASE DBAPI_REPLICA_DB;
-
--- Create secret for source credentials
-CREATE SECRET DBAPI_REPLICA_DB.PUBLIC.PG_SECRET
-  TYPE = PASSWORD
-  USERNAME = 'your_user'
-  PASSWORD = 'your_password';
-
--- Create network rule
-CREATE NETWORK RULE DBAPI_REPLICA_DB.PUBLIC.PG_NETWORK_RULE
-  TYPE = HOST_PORT
-  MODE = EGRESS
-  VALUE_LIST = ('your-postgres-host.example.com:5432');
-
--- Create external access integration
-CREATE EXTERNAL ACCESS INTEGRATION PG_ACCESS_INTEGRATION
-  ALLOWED_NETWORK_RULES = (DBAPI_REPLICA_DB.PUBLIC.PG_NETWORK_RULE)
-  ALLOWED_AUTHENTICATION_SECRETS = (DBAPI_REPLICA_DB.PUBLIC.PG_SECRET)
-  ENABLED = TRUE;
-```
-
-### 2. Configure replication
-
-```yaml
-# config/replication_config.yaml
-source:
-  driver: psycopg2
-  host: "${PG_HOST}"  # Use env var or replace with your host
-  port: 5432
-  secret_name: "DBAPI_REPLICA_DB.PUBLIC.PG_SECRET"
-  timezone: "UTC"  # Source DB timezone - critical for CDC accuracy
-  databases:
-    - name: customer_a_db
-      tables:
-        - name: users
-          primary_key: [user_id]
-          cdc_column: updated_at
-        - name: orders
-          primary_key: [id]
-          cdc_column: updated_at
-
-target:
-  database: DBAPI_REPLICA_DB
-  schema_pattern: "{source_db}_RAW"
-
-orchestration:
-  external_access_integration: PG_ACCESS_INTEGRATION
-  dag_name: DBAPI_REPLICATION_DAG
-  schedule: "0 */4 * * *"  # Every 4 hours
-```
-
-### 3. Deploy to Snowflake
-
 ```bash
-pip install -e .
+# 1. Infrastructure
+cd terraform && terraform apply -auto-approve && cd ..
 
-# Preview what will be deployed
-SNOWFLAKE_CONNECTION_NAME=myconnection python -m dbapi_cdc.deploy_to_snowflake --dry-run
+# 2. Deploy (procedures, WAL slots, config, task DAG)
+python deploy.py -c myconnection --pg-password "$PG_PASSWORD"
 
-# Actually deploy
-SNOWFLAKE_CONNECTION_NAME=myconnection python -m dbapi_cdc.deploy_to_snowflake
+# 3. Sync
+EXECUTE TASK DBAPI_REPLICA_DB.UTILS.CDC_SYNC_DAG;
 ```
-
-**Output:**
-```
-[1/5] Creating DBAPI_REPLICA_DB.UTILS and stage...
-[2/5] Creating and uploading package...
-[3/5] Creating SYNC_TABLE procedure...
-[4/5] Creating SYNC_ALL procedure...
-[5/5] Creating Task DAG...
-
-============================================================
-DEPLOYMENT COMPLETE!
-============================================================
-
-Procedures:
-  - DBAPI_REPLICA_DB.UTILS.SYNC_TABLE(config, db, table, full_refresh)
-  - DBAPI_REPLICA_DB.UTILS.SYNC_ALL(config, full_refresh)
-
-Task DAG: DBAPI_REPLICA_DB.UTILS.DBAPI_REPLICATION_DAG
-  Schedule: 0 */4 * * * (every 4 hours)
-  Child Tasks: 10
-```
-
-### 4. Run and Monitor
-
-```sql
--- Trigger immediate sync
-EXECUTE TASK DBAPI_REPLICA_DB.UTILS.DBAPI_REPLICATION_DAG;
-
--- Check replication status
-SELECT SOURCE_DB, TABLE_NAME, SYNC_STATUS, ROWS_SYNCED
-FROM DBAPI_REPLICA_DB.PUBLIC._REPLICATION_STATE;
-
--- View sync logs with timing
-SELECT LOG_TS, SOURCE_DB, TABLE_NAME, EVENT_TYPE, ROWS_AFFECTED, DURATION_MS
-FROM DBAPI_REPLICA_DB.PUBLIC._SYNC_LOGS
-ORDER BY LOG_TS DESC LIMIT 20;
-```
-
-### 5. Monitoring Dashboard
-
-```bash
-SNOWFLAKE_CONNECTION_NAME=myconnection streamlit run monitoring/streamlit_app.py
-```
-
-Features:
-- Real-time sync status with row drift detection
-- Source vs target row count comparison
-- Task execution history
-- One-click "Run Sync" and "Reconnect" buttons
-
-## Example Results
-
-**Full refresh of 260k rows in ~16 seconds:**
-
-| SOURCE_DB | TABLE_NAME | ROWS | DURATION |
-|-----------|------------|------|----------|
-| customer_a_db | users | 63,579 | 14s |
-| customer_a_db | orders | 43,000 | 16s |
-| customer_a_db | payments | 33,000 | 14s |
-| customer_a_db | products | 23,000 | 13s |
-| customer_a_db | inventory | 23,000 | 16s |
-| customer_b_db | (all 5) | 75,012 | 15s |
 
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────────┐     ┌─────────────────┐
-│  PostgreSQL     │────▶│  Snowpark DB-API     │────▶│  Snowflake      │
-│  (source)       │     │  session.read.dbapi()│     │  MERGE upsert   │
-└─────────────────┘     └──────────────────────┘     └─────────────────┘
-                                  │
-                        ┌─────────┴─────────┐
-                        │    Task DAG       │
-                        │  (parallel sync)  │
-                        │                   │
-                        │  ┌─────┐ ┌─────┐  │
-                        │  │users│ │orders│ │
-                        │  └─────┘ └─────┘  │
-                        │  ┌─────┐ ┌─────┐  │
-                        │  │prod │ │inv  │  │
-                        │  └─────┘ └─────┘  │
-                        └───────────────────┘
+PostgreSQL                          Snowflake
+┌────────────────────┐              ┌─────────────────────────────────┐
+│ customer_a_db      │──┐           │ DBAPI_REPLICA_DB                │
+│ customer_b_db      │──┼──dbapi()─▶│ ├─ CUSTOMER_A_DATA (14 tables) │
+│ customer_c_db      │──┘           │ ├─ CUSTOMER_B_DATA (14 tables) │
+└────────────────────┘              │ └─ CUSTOMER_C_DATA (14 tables) │
+     WAL Slots                      └─────────────────────────────────┘
+  sf_cdc_customer_a                         Task DAG
+  sf_cdc_customer_b                   CDC_SYNC_DAG (root)
+  sf_cdc_customer_c                      └─ 42 parallel child tasks
 ```
 
-## How It Works
+## Sync Methods
 
-### The Key Innovation: Snowpark DB-API 2.0
+| Method | Use Case | How It Works |
+|--------|----------|--------------|
+| **FULL** | Small reference tables | Truncate & reload entire table |
+| **CDC** | Tables with timestamp column | Watermark-based MERGE (only rows > last sync) |
+| **WAL** | Large tables, need DELETEs | PostgreSQL logical replication slot |
 
-Traditional ETL requires:
-1. External compute (EC2, Lambda, etc.) to query source database
-2. Staging data somewhere (S3, local disk)
-3. Loading into Snowflake via COPY or Snowpipe
+## Performance (Measured)
 
-**Snowpark DB-API eliminates all of this.** With `session.read.dbapi()`, Snowflake's compute directly connects to your source database:
+| Table Size | Throughput |
+|------------|------------|
+| 3M rows (rec_items) | **14,416 rows/sec** |
+| 1.7M rows (rec_period_information) | **7,094 rows/sec** |
+| 183K rows (var_activity) | **7,359 rows/sec** |
 
-```python
-# This runs INSIDE Snowflake - no external compute needed
-df = session.read.dbapi(
-    connection_factory,           # psycopg2.connect wrapper
-    query="SELECT * FROM users WHERE updated_at > '2024-01-01'",
-    fetch_size=100000,            # Batch size for streaming
-    num_partitions=4,             # Parallel extraction threads
-)
-```
+### 6M Row Projection
 
-### Why This Works
+| Rows | Estimated Time |
+|------|----------------|
+| 6,000,000 | **7-14 minutes** per table |
+| 18,000,000 (parallel DAG) | **~15-20 minutes** total |
 
-1. **External Access Integration**: Snowflake securely connects to external hosts
-   ```sql
-   CREATE EXTERNAL ACCESS INTEGRATION PG_ACCESS_INTEGRATION
-     ALLOWED_NETWORK_RULES = (PG_NETWORK_RULE)
-     ALLOWED_AUTHENTICATION_SECRETS = (PG_SECRET)
-     ENABLED = TRUE;
-   ```
-
-2. **Stored Procedure with Python Runtime**: The CDC logic runs as a stored procedure
-   ```sql
-   CREATE PROCEDURE SYNC_TABLE(config, database, table, full_refresh)
-     LANGUAGE PYTHON
-     RUNTIME_VERSION = '3.10'
-     PACKAGES = ('snowflake-snowpark-python', 'pyyaml', 'psycopg2')
-     IMPORTS = ('@CDC_STAGE/dbapi_cdc.zip')
-     EXTERNAL_ACCESS_INTEGRATIONS = (PG_ACCESS_INTEGRATION)
-     SECRETS = ('creds' = PG_SECRET)
-     HANDLER = 'dbapi_cdc.procedures.sync_table'
-   ```
-
-3. **Task DAG for Parallelism**: Root task triggers child tasks that run in parallel
-   ```
-   DBAPI_REPLICATION_DAG (root, scheduled)
-       ├── DBAPI_REPLICATION_DAG_CUSTOMER_A_DB_USERS
-       ├── DBAPI_REPLICATION_DAG_CUSTOMER_A_DB_ORDERS
-       ├── DBAPI_REPLICATION_DAG_CUSTOMER_A_DB_PAYMENTS
-       └── ... (all run in parallel after root completes)
-   ```
-
-### Data Flow Detail
+## Project Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         SNOWFLAKE COMPUTE                                │
-│  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │  Stored Procedure: SYNC_TABLE                                    │   │
-│  │                                                                  │   │
-│  │  1. Get high watermark from _REPLICATION_STATE                   │   │
-│  │     SELECT last_sync_value WHERE table='users'                   │   │
-│  │     → '2024-01-23 10:00:00'                                      │   │
-│  │                                                                  │   │
-│  │  2. Extract via DB-API (runs inside Snowflake!)                  │   │
-│  │     session.read.dbapi(                                          │   │
-│  │       query="SELECT * FROM users WHERE updated_at > '...'",      │   │
-│  │       num_partitions=4  # Parallel extraction                    │   │
-│  │     ) ──────────────────────┐                                    │   │
-│  │                             │                                    │   │
-│  │  3. Load via MERGE         ▼                                    │   │
-│  │     df.write.merge(     ┌──────────┐                            │   │
-│  │       target_table,     │ Snowpark │                            │   │
-│  │       primary_key,      │ DataFrame│                            │   │
-│  │       update_cols       └──────────┘                            │   │
-│  │     )                                                            │   │
-│  │                                                                  │   │
-│  │  4. Update watermark                                             │   │
-│  │     UPDATE _REPLICATION_STATE SET last_sync_value = MAX(updated_at) │
-│  │                                                                  │   │
-│  │  5. Log event to _SYNC_LOGS                                      │   │
-│  │     INSERT INTO _SYNC_LOGS (event_type='SYNC_COMPLETE', ...)     │   │
-│  └─────────────────────────────────────────────────────────────────┘   │
-│                              │                                          │
-│                              │ External Access Integration              │
-│                              ▼                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-                               │
-                               │ TCP/5432 (allowed by Network Rule)
-                               ▼
-                    ┌─────────────────────┐
-                    │     PostgreSQL      │
-                    │  (external source)  │
-                    └─────────────────────┘
+db-api/
+├── deploy.py              # One-command deployment script
+├── config/
+│   └── replication_config.yaml  # Database and table definitions
+├── dbapi_cdc/
+│   ├── procedures.py      # Snowpark stored procedures
+│   └── dag.py             # Task DAG deployment
+├── terraform/
+│   └── main.tf            # Infrastructure (DB, secrets, integrations)
+└── scripts/
+    └── demo.sh            # Demo/test script
 ```
-
-### CDC High Watermark Strategy
-
-Each table tracks its own watermark in `_REPLICATION_STATE`:
-
-| source_db | table_name | last_sync_value | sync_status |
-|-----------|------------|-----------------|-------------|
-| customer_a_db | users | 2024-01-23 10:00:00 | completed |
-| customer_a_db | orders | 2024-01-23 10:00:00 | completed |
-
-**Incremental sync query:**
-```sql
-SELECT * FROM users WHERE updated_at > '2024-01-23 10:00:00'
-```
-
-**Timezone handling** (critical!): Source DB timezone must be configured to ensure watermark comparisons work correctly:
-```yaml
-source:
-  timezone: "UTC"  # Must match your source database timezone
-```
-
-### MERGE Upsert Logic
-
-Data is loaded using Snowpark's MERGE which handles both inserts and updates:
-
-```python
-df.write.mode("overwrite").merge(
-    target_table,
-    primary_key=["user_id"],           # Match on primary key
-    update_columns=["name", "email", "updated_at"],  # Update these on match
-)
-```
-
-This generates SQL like:
-```sql
-MERGE INTO target_table t
-USING source_data s ON t.user_id = s.user_id
-WHEN MATCHED THEN UPDATE SET t.name = s.name, t.email = s.email, ...
-WHEN NOT MATCHED THEN INSERT (user_id, name, email, ...) VALUES (...)
-```
-
-## Modules
-
-| Module | Purpose |
-|--------|---------|
-| `extractor.py` | Pull data via `session.read.dbapi()` with partitioned extraction |
-| `loader.py` | Load into Snowflake via Snowpark MERGE |
-| `replicator.py` | Orchestrate extraction, loading, and logging |
-| `state.py` | Track high watermarks per table in `_REPLICATION_STATE` |
-| `procedures.py` | Snowflake stored procedure entry points |
-| `deploy_to_snowflake.py` | Deploy procedures, Task DAG, and upload package |
 
 ## Configuration
 
-Key config options in `replication_config.yaml`:
+Edit `config/replication_config.yaml`:
 
-| Option | Description |
-|--------|-------------|
-| `source.timezone` | Source DB timezone (UTC, America/Los_Angeles) - critical for CDC |
-| `source.driver` | Database driver (psycopg2, pymssql, pymysql) |
-| `orchestration.schedule` | Cron schedule for Task DAG |
-| `orchestration.parallelism` | Number of parallel table syncs |
+```yaml
+databases:
+  - database_id: "customer_a_prod"
+    source_db_name: "customer_a_db"
+    host: "your-pg-host.snowflake.app"
+    target_schema: "CUSTOMER_A_DATA"
+    wal_slot: "sf_cdc_customer_a"
 
-## Test Data Generation
+defaults:
+  sync_method: "full"
+  primary_key: "pkid"
 
-```bash
-# Generate test data (password via env var for security)
-PG_PASSWORD=xxx python scripts/fast_data_gen.py --host your-host.com large
-
-# Scale options: small, medium, large, xlarge
-python scripts/fast_data_gen.py --help
+tables:
+  - name: "users"
+    sync_method: "wal"      # Use WAL for large tables
+  - name: "rec_currency_rates_rt"
+    sync_method: "cdc"      # Use CDC with timestamp watermark
+    cdc_column: "db_update_date"
+  - name: "os_currencies"   # Uses default: full
 ```
 
-## Testing
+## Stored Procedures
 
-```bash
-# Run unit tests
-uv run pytest tests/ -v
+| Procedure | Description |
+|-----------|-------------|
+| `SYNC_SINGLE_TABLE(db_id, table_id)` | Sync one table |
+| `CHECK_PG_HEALTH()` | Test PostgreSQL connection |
+| `SETUP_REPLICATION(config_json)` | Load config into registries |
+| `CONSOLIDATE_SYNC_LOG()` | Merge sync results into registry |
+
+## Troubleshooting
+
+```sql
+-- Check sync status
+SELECT TABLE_ID, SYNC_METHOD, LAST_SYNC_STATUS, LAST_SYNC_RECORDS
+FROM DBAPI_REPLICA_DB.UTILS.TABLE_REGISTRY
+WHERE LAST_SYNC_STATUS != 'success';
+
+-- Test PostgreSQL connection
+CALL DBAPI_REPLICA_DB.UTILS.CHECK_PG_HEALTH();
+
+-- Manual sync
+CALL DBAPI_REPLICA_DB.UTILS.SYNC_SINGLE_TABLE('customer_a_prod', 'customer_a_prod_users');
+
+-- Check task history
+SELECT NAME, STATE, SCHEDULED_TIME, ERROR_MESSAGE
+FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())
+WHERE NAME LIKE '%SYNC%'
+ORDER BY SCHEDULED_TIME DESC LIMIT 10;
 ```
+
+## Requirements
+
+- Snowflake account with External Access Integration capability
+- PostgreSQL 14+ with logical replication enabled (`wal_level = logical`)
+- Python 3.11+
+- Snow CLI
+
+## Key Files
+
+- **deploy.py**: Main deployment script (procedures, WAL slots, config, DAG)
+- **dbapi_cdc/procedures.py**: All sync logic (FULL, CDC, WAL methods)
+- **dbapi_cdc/dag.py**: Task DAG creation using `snowflake.core.task.dagv1`
+- **terraform/main.tf**: Infrastructure (database, schemas, secrets, integration)
+- **config/replication_config.yaml**: Table and database definitions

@@ -1,11 +1,13 @@
 """Tests for procedures module."""
 
 import pytest
+import tempfile
+import os
 
-from dbapi_cdc.procedures import _parse_config
+from dbapi_cdc.replicator import load_config
 
 
-class TestParseConfig:
+class TestLoadConfig:
     def test_parse_minimal(self):
         yaml_str = """
 source:
@@ -22,7 +24,10 @@ target:
   database: REPLICA
   schema_pattern: "{source_db}_RAW"
 """
-        cfg = _parse_config(yaml_str)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_str)
+            f.flush()
+            cfg = load_config(f.name)
 
         assert cfg.source_host == "localhost"
         assert cfg.source_port == 5432
@@ -51,7 +56,10 @@ extraction:
   fetch_size: 10000
   batch_size: 25000
 """
-        cfg = _parse_config(yaml_str)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_str)
+            f.flush()
+            cfg = load_config(f.name)
 
         assert cfg.driver == "pymssql"
         assert cfg.fetch_size == 10000
@@ -79,7 +87,10 @@ target:
   database: TARGET
   schema_pattern: "{source_db}"
 """
-        cfg = _parse_config(yaml_str)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+            f.write(yaml_str)
+            f.flush()
+            cfg = load_config(f.name)
 
         assert len(cfg.databases) == 2
         assert cfg.databases[0].name == "db1"

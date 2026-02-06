@@ -1,70 +1,171 @@
-source:
-  type: postgres
-  driver: psycopg2  # psycopg2, pymssql, pyodbc, mysql.connector
-  host: "${PG_HOST}"  # Set via environment or replace with your host
-  port: 5432
-  secret_name: "DBAPI_REPLICA_DB.PUBLIC.PG_SECRET"
-  timezone: "UTC"  # Source database timezone (UTC, America/Los_Angeles, etc.) - critical for CDC watermarks
+# =============================================================================
+# PostgreSQL → Snowflake Replication Configuration
+# =============================================================================
+# Multi-tenant setup: Same table structure replicated from multiple databases
+# 
+# Deploy each database separately:
+#   python3 deploy_config.py --database customer_a
+#   python3 deploy_config.py --database customer_b
+#
+# Or deploy all:
+#   python3 deploy_config.py --all
+# =============================================================================
 
-  databases:
-    - name: customer_a_db
-      tables:
-        - name: users
-          primary_key: [user_id]
-          cdc_column: updated_at
-        - name: orders
-          primary_key: [id]
-          cdc_column: updated_at
-          partition_column: id
-          num_partitions: 4
-        - name: payments
-          primary_key: [payment_id]
-          cdc_column: updated_at
-        - name: products
-          primary_key: [product_id]
-          cdc_column: updated_at
-        - name: inventory
-          primary_key: [inventory_id]
-          cdc_column: updated_at
+# -----------------------------------------------------------------------------
+# DATABASES - Multiple source databases (same schema, different data)
+# -----------------------------------------------------------------------------
+databases:
+  # Customer A - Production
+  - database_id: "customer_a_prod"
+    source_db_name: "customer_a_db"
+    host: "htsfodr735dklagr4zqg4uu34y.sfsenorthamerica-demo-jdemlow.us-west-2.aws.postgres.snowflake.app"
+    port: 5432
+    source_schema: "data"
+    target_schema: "CUSTOMER_A_DATA"
+    wal_slot: "sf_cdc_customer_a"
 
-    - name: customer_b_db
-      tables:
-        - name: users
-          primary_key: [user_id]
-          cdc_column: updated_at
-        - name: orders
-          primary_key: [id]
-          cdc_column: updated_at
-        - name: products
-          primary_key: [product_id]
-          cdc_column: updated_at
-        - name: payments
-          primary_key: [payment_id]
-          cdc_column: updated_at
-        - name: inventory
-          primary_key: [inventory_id]
-          cdc_column: updated_at
+  # Customer B - Production  
+  - database_id: "customer_b_prod"
+    source_db_name: "customer_b_db"
+    host: "htsfodr735dklagr4zqg4uu34y.sfsenorthamerica-demo-jdemlow.us-west-2.aws.postgres.snowflake.app"
+    port: 5432
+    source_schema: "data"
+    target_schema: "CUSTOMER_B_DATA"
+    wal_slot: "sf_cdc_customer_b"
 
-target:
-  database: DBAPI_REPLICA_DB
-  schema_pattern: "{source_db}_RAW"
-  create_if_not_exists: true
+  # Customer C - Production (could be different host)
+  - database_id: "customer_c_prod"
+    source_db_name: "customer_c_db"
+    host: "htsfodr735dklagr4zqg4uu34y.sfsenorthamerica-demo-jdemlow.us-west-2.aws.postgres.snowflake.app"
+    port: 5432
+    source_schema: "data"
+    target_schema: "CUSTOMER_C_DATA"
+    wal_slot: "sf_cdc_customer_c"
 
-orchestration:
-  dag_name: "DBAPI_REPLICATION_DAG"
-  schedule: "0 */4 * * *"
-  timezone: "UTC"
-  warehouse: null
-  parallelism: 4
-  retry_attempts: 2
-  user_task_timeout_ms: 3600000
-  external_access_integration: "PG_ACCESS_INTEGRATION"
+# -----------------------------------------------------------------------------
+# DEFAULTS - Applied to all tables unless overridden
+# -----------------------------------------------------------------------------
+defaults:
+  sync_method: "full"
+  primary_key: "pkid"
+  cdc_column: "db_update_date"
 
-extraction:
-  fetch_size: 100000
-  query_timeout: 300
+# -----------------------------------------------------------------------------
+# TABLES - Same structure replicated across all databases above
+# -----------------------------------------------------------------------------
+tables:
+  # ===========================================================================
+  # FULL SYNC - Small reference tables (< 100 rows)
+  # Simple truncate & reload - always consistent, no setup required
+  # ===========================================================================
+  - name: "org_settings"
+    sync_method: "full"
+    primary_key: "pkid"
+    description: "Organization configuration (1-5 rows)"
 
-monitoring:
-  state_schema: "PUBLIC"
-  state_table: "_REPLICATION_STATE"
-  log_level: "INFO"
+  - name: "os_currencies"
+    sync_method: "full"
+    primary_key: "pkid"
+    description: "Currency reference data (10-20 rows)"
+
+  - name: "org_financial_statements"
+    sync_method: "full"
+    primary_key: "pkid"
+    description: "Financial statement definitions (20-50 rows)"
+
+  - name: "rec_periods"
+    sync_method: "full"
+    primary_key: "pkid"
+    description: "Reconciliation periods (12-60 rows)"
+
+  # ===========================================================================
+  # CDC SYNC - Medium table with timestamp tracking (example)
+  # Incremental via db_update_date - efficient but misses hard deletes
+  # ===========================================================================
+  - name: "rec_currency_rates_rt"
+    sync_method: "cdc"
+    primary_key: "pkid"
+    cdc_column: "db_update_date"
+    description: "Exchange rates (~3K rows) - CDC example"
+
+  # ===========================================================================
+  # WAL SYNC - Large transactional tables + tables where deletes matter
+  # Real-time via PostgreSQL logical replication - catches INSERT/UPDATE/DELETE
+  # ===========================================================================
+  - name: "users"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "User accounts - must detect deactivations (deletes)"
+
+  - name: "org_entities"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "Organization hierarchy - structural changes matter"
+
+  - name: "rec_period_information"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "Period details (1.7M rows) - high volume, real-time"
+
+  - name: "rec_item_assignments"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "Item assignments (400K rows) - high volume, real-time"
+
+  - name: "var_activity"
+    sync_method: "full"
+    primary_key: "assignment_id, period_id, prior_period_id"
+    description: "Variance activity (180K rows) - composite PK"
+
+  - name: "comment_details"
+    sync_method: "full"
+    primary_key: "comment_id"
+    description: "Comments/notes (25K rows) - full sync (no pkid column)"
+
+  - name: "rec_reconciliations"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "Reconciliation headers - track lifecycle"
+
+  - name: "rec_assignments"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "Assignment mappings - track changes"
+
+  - name: "rec_items"
+    sync_method: "wal"
+    primary_key: "pkid"
+    description: "Reconciliation items - track lifecycle"
+
+# =============================================================================
+# ARCHITECTURE SUMMARY
+# =============================================================================
+#
+#  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+#  │  Customer A DB   │     │  Customer B DB   │     │  Customer C DB   │
+#  │  (blfra_db)      │     │  (blfra_db_002)  │     │  (blfra_db_003)  │
+#  └────────┬─────────┘     └────────┬─────────┘     └────────┬─────────┘
+#           │                        │                        │
+#           │ WAL slot               │ WAL slot               │ WAL slot
+#           ▼                        ▼                        ▼
+#  ┌─────────────────────────────────────────────────────────────────────┐
+#  │                    SNOWFLAKE (DBAPI_REPLICA_DB)                     │
+#  ├─────────────────────┬─────────────────────┬─────────────────────────┤
+#  │  CUSTOMER_A_DATA    │  CUSTOMER_B_DATA    │  CUSTOMER_C_DATA        │
+#  │  ├── USERS          │  ├── USERS          │  ├── USERS              │
+#  │  ├── ORG_ENTITIES   │  ├── ORG_ENTITIES   │  ├── ORG_ENTITIES       │
+#  │  ├── REC_PERIOD_... │  ├── REC_PERIOD_... │  ├── REC_PERIOD_...     │
+#  │  └── ...            │  └── ...            │  └── ...                │
+#  └─────────────────────┴─────────────────────┴─────────────────────────┘
+#
+# =============================================================================
+# SYNC METHOD SUMMARY
+# =============================================================================
+#
+#  Method │ Tables │ Use Case
+#  ───────┼────────┼──────────────────────────────────────
+#  full   │ 4      │ Small reference data (< 100 rows)
+#  cdc    │ 1      │ Example: timestamp-based incremental
+#  wal    │ 9      │ Everything else - real-time CDC
+#
+# =============================================================================
