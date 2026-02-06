@@ -16,7 +16,7 @@ cp .env.example .env
 # Edit .env with your Snowflake/PostgreSQL credentials
 
 # Start on port 3847
-docker compose up -d
+docker-compose up -d
 
 # Access at http://localhost:3847
 ```
@@ -29,9 +29,27 @@ npm run dev
 # http://localhost:3000
 ```
 
-## Pages
+## Architecture
 
-- `/` - Home with quick stats
-- `/setup` - Configuration (tables, WAL slots, setup guide)
-- `/monitoring` - Real-time dashboard with sync trigger
-- `/logs` - Forensic log viewer with filtering and CSV export
+```
+/                   # Home - quick stats and navigation
+/setup              # Configuration wizard
+  - Tables tab      # View/edit table sync config
+  - WAL Slots tab   # Manage PostgreSQL replication slots
+  - Guide tab       # Step-by-step setup instructions
+/monitoring         # Real-time dashboard
+  - Success/error counts
+  - Trigger sync button
+  - Auto-refresh every 5s
+/logs               # Forensic log viewer
+  - Filter by status/table
+  - Detailed error analysis
+  - CSV export
+```
+
+## API Endpoints
+
+- `GET /api/health` - Health check
+- `GET /api/sync-logs` - Fetch sync logs (params: limit, status, table)
+- `GET /api/tables` - Get table configuration
+- `POST /api/trigger-sync` - Execute CDC_SYNC_DAG task

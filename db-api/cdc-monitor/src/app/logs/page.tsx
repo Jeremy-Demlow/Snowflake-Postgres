@@ -124,17 +124,17 @@ export default function LogsPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-6">
-          <div className="col-span-2 bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+        <div className="flex gap-6">
+          <div className="flex-1 bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
             <div className="max-h-[70vh] overflow-auto">
               <table className="w-full">
                 <thead className="bg-gray-800 sticky top-0">
                   <tr>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">ID</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-400">Table</th>
-                    <th className="px-4 py-3 text-center text-sm font-medium text-gray-400">Status</th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Rows</th>
-                    <th className="px-4 py-3 text-right text-sm font-medium text-gray-400">Time</th>
+                    <th className="w-14 px-2 py-3 text-left text-xs font-medium text-gray-400">ID</th>
+                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-400">Table</th>
+                    <th className="w-14 px-2 py-3 text-center text-xs font-medium text-gray-400">Status</th>
+                    <th className="w-20 px-2 py-3 text-right text-xs font-medium text-gray-400">Rows</th>
+                    <th className="w-40 px-2 py-3 text-right text-xs font-medium text-gray-400">Time</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
@@ -144,17 +144,17 @@ export default function LogsPage() {
                       onClick={() => setSelectedLog(log)}
                       className={`hover:bg-gray-800/50 cursor-pointer ${selectedLog?.LOG_ID === log.LOG_ID ? 'bg-gray-800' : ''}`}
                     >
-                      <td className="px-4 py-2 text-sm text-gray-400">{log.LOG_ID}</td>
-                      <td className="px-4 py-2 font-mono text-sm">{log.TABLE_ID}</td>
-                      <td className="px-4 py-2 text-center">
+                      <td className="px-2 py-2 text-xs text-gray-400">{log.LOG_ID}</td>
+                      <td className="px-2 py-2 font-mono text-xs" title={log.TABLE_ID}>{log.TABLE_ID}</td>
+                      <td className="px-2 py-2 text-center">
                         {log.SYNC_STATUS === 'success' ? (
                           <CheckCircle className="w-4 h-4 text-green-400 mx-auto" />
                         ) : (
                           <XCircle className="w-4 h-4 text-red-400 mx-auto" />
                         )}
                       </td>
-                      <td className="px-4 py-2 text-right text-sm">{(log.SYNC_RECORDS || 0).toLocaleString()}</td>
-                      <td className="px-4 py-2 text-right text-sm text-gray-400">
+                      <td className="px-2 py-2 text-right text-xs">{(log.SYNC_RECORDS || 0).toLocaleString()}</td>
+                      <td className="px-2 py-2 text-right text-xs text-gray-400">
                         {new Date(log.LOGGED_AT).toLocaleString()}
                       </td>
                     </tr>
@@ -164,7 +164,7 @@ export default function LogsPage() {
             </div>
           </div>
 
-          <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+          <div className="w-72 shrink-0 bg-gray-900 rounded-lg border border-gray-800 p-4">
             <h3 className="text-lg font-semibold mb-4">Log Details</h3>
             {selectedLog ? (
               <div className="space-y-4">
