@@ -23,11 +23,11 @@ A production-grade Change Data Capture (CDC) pipeline that replicates data from 
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │                          DBAPI_REPLICA_DB.UTILS                         │   │
 │  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────────────────┐ │   │
-│  │  │ DATABASE_      │  │ TABLE_         │  │ SYNC_LOG                   │ │   │
-│  │  │ REGISTRY       │  │ REGISTRY       │  │ (Forensic Audit Trail)     │ │   │
+│  │  │ DATABASE_      │  │ TABLE_         │  │ SYNC_HISTORY               │ │   │
+│  │  │ REGISTRY       │  │ REGISTRY       │  │ (Permanent Audit Trail)    │ │   │
 │  │  │ • DB configs   │  │ • Table meta   │  │ • Every sync execution     │ │   │
-│  │  │ • Credentials  │  │ • Sync methods │  │ • Row counts & duration    │ │   │
-│  │  │                │  │ • Watermarks   │  │ • CDC row details          │ │   │
+│  │  │ • Credentials  │  │ • Sync methods │  │ • Throughput (rows/sec)    │ │   │
+│  │  │                │  │ • Watermarks   │  │ • Error messages           │ │   │
 │  │  └────────────────┘  └────────────────┘  └────────────────────────────┘ │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
@@ -65,14 +65,20 @@ A production-grade Change Data Capture (CDC) pipeline that replicates data from 
 
 | Method | Description | Use Case | Performance |
 |--------|-------------|----------|-------------|
-| **FULL** | Truncate & reload entire table | Dimension tables, small tables | ~15K rows/sec |
+| **FULL** | Truncate & reload entire table | Dimension tables, small tables | ~6-8K rows/sec |
 | **CDC** | Incremental based on watermark column | Append-only or has `updated_at` | ~50K rows/sec |
 | **WAL** | PostgreSQL logical replication | Real-time, high-frequency updates | Near real-time |
+
+### Measured Throughput (from SYNC_HISTORY)
+| Table | Rows | Duration | Throughput |
+|-------|------|----------|------------|
+| var_activity | 183,125 | 23.6s | 7,755 rows/sec |
+| comment_details | 25,873 | 4.3s | 5,997 rows/sec |
 
 ## UI Features
 
 ### Dashboard (`/`)
-- **Pipeline Status Cards**: Shows 3 databases, 42 tables, sync health, 627K rows synced
+- **Pipeline Status Cards**: Shows 3 databases, 42 tables, sync health, 18M rows synced
 - **Quick Navigation**: Cards linking to Setup, Monitoring, and Forensic Logs
 - **Connection Status**: Real-time Snowflake connection indicator
 - **Quick Actions**: "View Live Syncs" and "Check Logs" buttons
@@ -98,23 +104,31 @@ A production-grade Change Data Capture (CDC) pipeline that replicates data from 
 
 ## Performance Benchmarks
 
-Based on actual sync operations:
+Based on actual replicated data in Snowflake:
 
 | Metric | Value |
 |--------|-------|
-| **Total Tables Synced** | 42 |
-| **Total Rows Synced** | 627,233 |
-| **Average Rows/Table** | ~15,000 |
-| **Largest Single Table** | 183,125 rows |
+| **Total Tables Replicated** | 42 |
+| **Total Rows in Snowflake** | **18,004,866** |
+| **Average Rows/Table** | ~429,000 |
+| **Largest Single Table** | 2,969,648 rows (REC_ITEMS) |
 | **Databases Replicated** | 3 |
+
+### Data by Customer Database
+
+| Database | Tables | Total Rows |
+|----------|--------|------------|
+| CUSTOMER_A_DATA | 14 | 6,052,460 |
+| CUSTOMER_B_DATA | 14 | 5,976,203 |
+| CUSTOMER_C_DATA | 14 | 5,976,203 |
 
 ### Sync Method Distribution
 
-| Method | Tables | Rows Synced |
+| Method | Tables | Description |
 |--------|--------|-------------|
-| WAL (Logical Replication) | 21 | Real-time stream |
-| FULL (Truncate + Reload) | 18 | 627,233 |
-| CDC (Incremental) | 3 | Delta only |
+| WAL (Logical Replication) | 21 | Real-time change capture |
+| FULL (Truncate + Reload) | 18 | Complete table refresh |
+| CDC (Incremental) | 3 | Watermark-based delta sync |
 
 ## Project Structure
 
@@ -263,7 +277,26 @@ CREATE TABLE TABLE_REGISTRY (
 );
 ```
 
-### SYNC_LOG
+### SYNC_HISTORY (Permanent Audit)
+
+```sql
+CREATE TABLE SYNC_HISTORY (
+    HISTORY_ID INTEGER AUTOINCREMENT PRIMARY KEY,
+    TABLE_ID VARCHAR(200),
+    DATABASE_ID VARCHAR(100),
+    SYNC_METHOD VARCHAR(20),
+    SYNC_STATUS VARCHAR(500),
+    SYNC_RECORDS INTEGER,
+    SYNC_DURATION_SEC FLOAT,
+    ROWS_PER_SEC FLOAT,
+    NEW_WATERMARK VARCHAR(100),
+    CDC_ROWS INTEGER,
+    ERROR_MESSAGE VARCHAR(2000),
+    LOGGED_AT TIMESTAMP_NTZ
+);
+```
+
+### SYNC_LOG (Working Table)
 
 ```sql
 CREATE TABLE SYNC_LOG (

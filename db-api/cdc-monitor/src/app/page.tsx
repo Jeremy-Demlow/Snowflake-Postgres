@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Database, Activity, Settings, FileText, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react'
+import { Database, Activity, Settings, FileText, RefreshCw, AlertCircle, CheckCircle, DollarSign } from 'lucide-react'
 
 interface HealthData {
   status: string
@@ -11,16 +11,35 @@ interface HealthData {
   error?: string
 }
 
+interface CostData {
+  summary: {
+    totalCredits: number
+    estCostUsd: number
+    syncCount30d: number
+    creditsPerSync: number
+  }
+  projections: {
+    currentScale: { estMonthlyCost: number }
+    atScale: { estMonthlyCost: number }
+  }
+}
+
 export default function Home() {
   const [health, setHealth] = useState<HealthData | null>(null)
+  const [costs, setCosts] = useState<CostData | null>(null)
   const [loading, setLoading] = useState(true)
 
   const fetchHealth = async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/health')
-      const data = await res.json()
-      setHealth(data)
+      const [healthRes, costsRes] = await Promise.all([
+        fetch('/api/health'),
+        fetch('/api/costs')
+      ])
+      const healthData = await healthRes.json()
+      const costsData = await costsRes.json()
+      setHealth(healthData)
+      setCosts(costsData)
     } catch (err) {
       setHealth({ status: 'error', snowflake: { connected: false, error: 'Failed to connect' } })
     }
@@ -76,7 +95,7 @@ export default function Home() {
           </div>
         </div>
         
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <Link href="/setup" className="block p-6 bg-gray-900 rounded-lg border border-gray-800 hover:border-blue-500 transition-colors group">
             <Settings className="w-8 h-8 mb-4 text-blue-400 group-hover:scale-110 transition-transform" />
             <h2 className="text-xl font-semibold mb-2">Setup</h2>
@@ -94,7 +113,34 @@ export default function Home() {
             <h2 className="text-xl font-semibold mb-2">Forensic Logs</h2>
             <p className="text-gray-400 text-sm">Complete sync history with filtering</p>
           </Link>
+          
+          <Link href="/costs" className="block p-6 bg-gray-900 rounded-lg border border-gray-800 hover:border-yellow-500 transition-colors group">
+            <DollarSign className="w-8 h-8 mb-4 text-yellow-400 group-hover:scale-110 transition-transform" />
+            <h2 className="text-xl font-semibold mb-2">Cost Tracking</h2>
+            <p className="text-gray-400 text-sm">Pipeline costs and projections</p>
+          </Link>
         </div>
+
+        {costs && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
+              <div className="text-sm text-gray-400">30-Day Credits</div>
+              <div className="text-2xl font-bold text-yellow-400">{costs.summary.totalCredits}</div>
+            </div>
+            <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
+              <div className="text-sm text-gray-400">30-Day Cost</div>
+              <div className="text-2xl font-bold text-green-400">${costs.summary.estCostUsd}</div>
+            </div>
+            <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
+              <div className="text-sm text-gray-400">Credits/Sync</div>
+              <div className="text-2xl font-bold text-blue-400">{costs.summary.creditsPerSync.toFixed(4)}</div>
+            </div>
+            <div className="p-4 bg-gray-900 rounded-lg border border-gray-800">
+              <div className="text-sm text-gray-400">Est. Monthly (2K tables)</div>
+              <div className="text-2xl font-bold text-purple-400">${costs.projections.atScale.estMonthlyCost.toLocaleString()}</div>
+            </div>
+          </div>
+        )}
 
         <div className="p-6 bg-gray-900 rounded-lg border border-gray-800">
           <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">

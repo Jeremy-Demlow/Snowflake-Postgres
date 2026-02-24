@@ -15,10 +15,12 @@ export async function GET(request: Request) {
   if (table) whereClause += ` AND TABLE_ID LIKE '%${table}%'`
   
   const logs = await executeQuery(`
-    SELECT LOG_ID, TABLE_ID, SYNC_STATUS, SYNC_RECORDS, 
-           ROUND(SYNC_DURATION_SEC, 2) as SYNC_DURATION_SEC, 
-           NEW_WATERMARK, CDC_ROWS, LOGGED_AT
-    FROM DBAPI_REPLICA_DB.UTILS.SYNC_LOG
+    SELECT HISTORY_ID as LOG_ID, TABLE_ID, DATABASE_ID, SYNC_METHOD,
+           SYNC_STATUS, SYNC_RECORDS, 
+           ROUND(SYNC_DURATION_SEC, 2) as SYNC_DURATION_SEC,
+           ROUND(ROWS_PER_SEC, 0) as ROWS_PER_SEC,
+           NEW_WATERMARK, CDC_ROWS, ERROR_MESSAGE, LOGGED_AT
+    FROM DBAPI_REPLICA_DB.UTILS.SYNC_HISTORY
     WHERE ${whereClause}
     ORDER BY LOGGED_AT DESC
     LIMIT ${limit}

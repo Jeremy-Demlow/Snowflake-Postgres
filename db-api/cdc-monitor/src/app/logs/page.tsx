@@ -7,11 +7,15 @@ import { ArrowLeft, Search, Filter, Download, AlertTriangle, CheckCircle, XCircl
 interface SyncLog {
   LOG_ID: number
   TABLE_ID: string
+  DATABASE_ID: string | null
+  SYNC_METHOD: string | null
   SYNC_STATUS: string
   SYNC_RECORDS: number
   SYNC_DURATION_SEC: number
+  ROWS_PER_SEC: number | null
   NEW_WATERMARK: string | null
   CDC_ROWS: number | null
+  ERROR_MESSAGE: string | null
   LOGGED_AT: string
 }
 
@@ -46,15 +50,19 @@ export default function LogsPage() {
   }
 
   const exportCSV = () => {
-    const headers = ['LOG_ID', 'TABLE_ID', 'SYNC_STATUS', 'SYNC_RECORDS', 'SYNC_DURATION_SEC', 'LOGGED_AT']
+    const headers = ['LOG_ID', 'TABLE_ID', 'DATABASE_ID', 'SYNC_METHOD', 'SYNC_STATUS', 'SYNC_RECORDS', 'ROWS_PER_SEC', 'SYNC_DURATION_SEC', 'ERROR_MESSAGE', 'LOGGED_AT']
     const csv = [
       headers.join(','),
       ...logs.map(log => [
         log.LOG_ID,
         log.TABLE_ID,
+        log.DATABASE_ID || '',
+        log.SYNC_METHOD || '',
         `"${log.SYNC_STATUS}"`,
         log.SYNC_RECORDS,
+        log.ROWS_PER_SEC || 0,
         log.SYNC_DURATION_SEC,
+        `"${(log.ERROR_MESSAGE || '').replace(/"/g, '""')}"`,
         log.LOGGED_AT
       ].join(','))
     ].join('\n')
@@ -132,8 +140,10 @@ export default function LogsPage() {
                   <tr>
                     <th className="w-14 px-2 py-3 text-left text-xs font-medium text-gray-400">ID</th>
                     <th className="px-2 py-3 text-left text-xs font-medium text-gray-400">Table</th>
+                    <th className="w-16 px-2 py-3 text-center text-xs font-medium text-gray-400">Method</th>
                     <th className="w-14 px-2 py-3 text-center text-xs font-medium text-gray-400">Status</th>
                     <th className="w-20 px-2 py-3 text-right text-xs font-medium text-gray-400">Rows</th>
+                    <th className="w-20 px-2 py-3 text-right text-xs font-medium text-gray-400">Rows/s</th>
                     <th className="w-40 px-2 py-3 text-right text-xs font-medium text-gray-400">Time</th>
                   </tr>
                 </thead>
@@ -147,6 +157,11 @@ export default function LogsPage() {
                       <td className="px-2 py-2 text-xs text-gray-400">{log.LOG_ID}</td>
                       <td className="px-2 py-2 font-mono text-xs" title={log.TABLE_ID}>{log.TABLE_ID}</td>
                       <td className="px-2 py-2 text-center">
+                        <span className={`px-1.5 py-0.5 text-xs rounded ${log.SYNC_METHOD === 'wal' ? 'bg-purple-900 text-purple-300' : log.SYNC_METHOD === 'cdc' ? 'bg-blue-900 text-blue-300' : 'bg-gray-700 text-gray-300'}`}>
+                          {log.SYNC_METHOD?.toUpperCase() || '?'}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2 text-center">
                         {log.SYNC_STATUS === 'success' ? (
                           <CheckCircle className="w-4 h-4 text-green-400 mx-auto" />
                         ) : (
@@ -154,6 +169,7 @@ export default function LogsPage() {
                         )}
                       </td>
                       <td className="px-2 py-2 text-right text-xs">{(log.SYNC_RECORDS || 0).toLocaleString()}</td>
+                      <td className="px-2 py-2 text-right text-xs text-cyan-400">{(log.ROWS_PER_SEC || 0).toLocaleString()}</td>
                       <td className="px-2 py-2 text-right text-xs text-gray-400">
                         {new Date(log.LOGGED_AT).toLocaleString()}
                       </td>
@@ -183,8 +199,16 @@ export default function LogsPage() {
                   <p>{(selectedLog.SYNC_RECORDS || 0).toLocaleString()}</p>
                 </div>
                 <div>
+                  <label className="text-sm text-gray-400">Sync Method</label>
+                  <p className="uppercase">{selectedLog.SYNC_METHOD || 'unknown'}</p>
+                </div>
+                <div>
                   <label className="text-sm text-gray-400">Duration</label>
                   <p>{selectedLog.SYNC_DURATION_SEC} seconds</p>
+                </div>
+                <div>
+                  <label className="text-sm text-gray-400">Throughput</label>
+                  <p className="text-cyan-400">{(selectedLog.ROWS_PER_SEC || 0).toLocaleString()} rows/sec</p>
                 </div>
                 {selectedLog.NEW_WATERMARK && (
                   <div>
@@ -196,14 +220,14 @@ export default function LogsPage() {
                   <label className="text-sm text-gray-400">Logged At</label>
                   <p>{new Date(selectedLog.LOGGED_AT).toLocaleString()}</p>
                 </div>
-                {selectedLog.SYNC_STATUS.startsWith('error') && (
+                {(selectedLog.SYNC_STATUS === 'error' || selectedLog.ERROR_MESSAGE) && (
                   <div className="p-3 bg-red-900/20 border border-red-800 rounded">
                     <div className="flex items-center gap-2 text-red-400 mb-2">
                       <AlertTriangle className="w-4 h-4" />
                       <span className="font-semibold">Error Details</span>
                     </div>
                     <p className="text-sm text-red-300 font-mono break-all">
-                      {selectedLog.SYNC_STATUS.replace('error: ', '')}
+                      {selectedLog.ERROR_MESSAGE || 'Unknown error'}
                     </p>
                   </div>
                 )}

@@ -365,6 +365,10 @@ def _do_wal_load(session, connection_factory, source_schema: str, source_table: 
     return total, rows_merged, f"WAL ({rows_merged} upserts, {rows_deleted} deletes)", rows_deleted
 
 
+def _get_query_comment(table_id: str, database_id: str, sync_method: str) -> str:
+    """Generate a query comment for cost attribution (query tags not allowed in procedures)."""
+    return f"/* cdc_pipeline: table={table_id}, db={database_id}, method={sync_method} */"
+
 def sync_single_table(session, database_id: str, table_id: str) -> str:
     """
     Sync a single table from PostgreSQL to Snowflake.
@@ -429,6 +433,8 @@ def sync_single_table(session, database_id: str, table_id: str) -> str:
     
     full_target = f"DBAPI_REPLICA_DB.{target_schema}.{target_table}"
     
+    cdc_comment = _get_query_comment(table_id, database_id, sync_method)
+    
     try:
         def connection_factory():
             return psycopg2.connect(
@@ -481,10 +487,20 @@ def sync_single_table(session, database_id: str, table_id: str) -> str:
         rows_per_sec = int(row_count / duration) if duration > 0 and row_count > 0 else 0
         
         new_watermark_val = watermark_update.replace(", LAST_WATERMARK = '", "").rstrip("'") if watermark_update else None
-        session.sql(f"""
+        session.sql(f"""{cdc_comment}
             INSERT INTO DBAPI_REPLICA_DB.UTILS.SYNC_LOG 
             (TABLE_ID, SYNC_STATUS, SYNC_RECORDS, SYNC_DURATION_SEC, NEW_WATERMARK, CDC_ROWS)
             VALUES ('{table_id}', 'success', {row_count}, {duration:.2f}, 
+                    {f"'{new_watermark_val}'" if new_watermark_val else 'NULL'},
+                    {row_count if cdc_rows_update else 'NULL'})
+        """).collect()
+        
+        session.sql(f"""{cdc_comment}
+            INSERT INTO DBAPI_REPLICA_DB.UTILS.SYNC_HISTORY 
+            (TABLE_ID, DATABASE_ID, SYNC_METHOD, SYNC_STATUS, SYNC_RECORDS, 
+             SYNC_DURATION_SEC, ROWS_PER_SEC, NEW_WATERMARK, CDC_ROWS)
+            VALUES ('{table_id}', '{database_id}', '{sync_method}', 'success', {row_count}, 
+                    {duration:.2f}, {rows_per_sec}, 
                     {f"'{new_watermark_val}'" if new_watermark_val else 'NULL'},
                     {row_count if cdc_rows_update else 'NULL'})
         """).collect()
@@ -499,6 +515,14 @@ def sync_single_table(session, database_id: str, table_id: str) -> str:
             INSERT INTO DBAPI_REPLICA_DB.UTILS.SYNC_LOG 
             (TABLE_ID, SYNC_STATUS, SYNC_RECORDS, SYNC_DURATION_SEC, NEW_WATERMARK, CDC_ROWS)
             VALUES ('{table_id}', 'error: {error_msg}', 0, {duration:.2f}, NULL, NULL)
+        """).collect()
+        
+        session.sql(f"""
+            INSERT INTO DBAPI_REPLICA_DB.UTILS.SYNC_HISTORY 
+            (TABLE_ID, DATABASE_ID, SYNC_METHOD, SYNC_STATUS, SYNC_RECORDS, 
+             SYNC_DURATION_SEC, ROWS_PER_SEC, ERROR_MESSAGE)
+            VALUES ('{table_id}', '{database_id}', '{sync_method}', 'error', 0, 
+                    {duration:.2f}, 0, '{error_msg}')
         """).collect()
         return f"ERROR: {source_table}: {str(e)[:200]}"
 
